@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main, feat/*, fix/*, chore/*, refactor/*]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-pr-title:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR title follows conventional commits
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          echo "PR title: $PR_TITLE"
+          if ! echo "$PR_TITLE" | grep -qP '^(feat|fix|perf|refactor|docs|style|test|chore|ci|build)(\(.+\))?(!)?: .+'; then
+            echo "ERROR: PR title must follow Conventional Commits format."
+            echo "Examples: 'feat: add plugin registry', 'fix(writer): handle permission error', 'feat!: breaking api change'"
+            echo "See https://www.conventionalcommits.org"
+            exit 1
+          fi
+
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run ruff check
+        run: ruff check .
+
+      - name: Run ruff format check
+        run: ruff format --check .
+
+      - name: Run mypy
+        run: mypy tagger/
+
+      - name: Run tests with coverage
+        run: pytest tests/unit tests/integration -m "not slow"
+        env:
+          CI: "1"

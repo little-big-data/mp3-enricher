@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# pre-push hook — mirrors the CI quality gate.
+# Runs automatically before every `git push`.
+#
+# One-time setup (per clone):
+#   git config core.hooksPath .githooks
+#
+# To skip in an emergency:
+#   git push --no-verify
+
+set -euo pipefail
+
+echo "==> pre-push: running CI checks …"
+
+# Resolve a working Python interpreter.
+# Priority: active venv > py launcher (Windows) > python > python3.
+find_python() {
+    if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+        # Use the venv Python directly
+        if [[ -x "$VIRTUAL_ENV/Scripts/python.exe" ]]; then
+            echo "$VIRTUAL_ENV/Scripts/python.exe"; return
+        fi
+        if [[ -x "$VIRTUAL_ENV/bin/python" ]]; then
+            echo "$VIRTUAL_ENV/bin/python"; return
+        fi
+    fi
+    for candidate in "py -3" python python3; do
+        # shellcheck disable=SC2086
+        if $candidate -c "import sys" 2>/dev/null; then
+            echo $candidate; return
+        fi
+    done
+    echo "ERROR: no working Python interpreter found." >&2
+    exit 1
+}
+
+PYTHON=$(find_python)
+
+run() {
+    echo ""
+    echo "--- $*"
+    # Split PYTHON in case it is "py -3" (two words)
+    # shellcheck disable=SC2086
+    $PYTHON -m "$@"
+}
+
+run ruff check .
+run ruff format --check .
+run mypy tagger/
+run pytest tests/unit tests/integration -m "not slow" -q
+
+echo ""
+echo "==> pre-push: all checks passed."
