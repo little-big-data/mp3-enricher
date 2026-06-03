@@ -1187,5 +1187,107 @@ def link_scan(db_path: Path, artist: str | None, dry_run: bool, no_llm: bool) ->
     click.echo("[*] Run 'write' to flush changes to ID3 tags.")
 
 
+@cli.command("audit-itunes")
+@click.option(
+    "--library",
+    "library_path",
+    required=True,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help=r"Path to the music library root (e.g. M:\Shared Music).",
+)
+@click.option(
+    "--itunes-xml",
+    "itunes_xml",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Path to iTunes Music Library.xml.",
+)
+@click.option(
+    "--out",
+    type=Path,
+    default=Path("itunes_audit.csv"),
+    show_default=True,
+    help="Output CSV path.",
+)
+@click.option(
+    "--threshold",
+    type=int,
+    default=75,
+    show_default=True,
+    help="Fuzzy-match score below which a field is flagged as mismatched.",
+)
+@click.option(
+    "--workers",
+    type=int,
+    default=4,
+    show_default=True,
+    help="Number of threads for parallel ID3 tag reading.",
+)
+def audit_itunes(
+    library_path: Path,
+    itunes_xml: Path,
+    out: Path,
+    threshold: int,
+    workers: int,
+) -> None:
+    """Compare MP3 ID3 tags against an iTunes XML library record.
+
+    Surfaces Artist / Album Artist / Album discrepancies and missing track
+    numbers by fuzzy-matching current ID3 tags against the iTunes ground-truth
+    record.  Writes a CSV report to --out.
+    """
+    import csv as _csv
+
+    from tagger.integrity.itunes_comparator import compare_library
+
+    click.echo(f"[*] Loading iTunes library from {itunes_xml} ...")
+    click.echo(f"[*] Scanning {library_path} with {workers} worker(s) ...")
+
+    discrepancies = compare_library(
+        library_path=library_path,
+        itunes_xml=itunes_xml,
+        threshold=threshold,
+        workers=workers,
+    )
+
+    fieldnames = [
+        "file_path",
+        "artist_folder",
+        "album_folder",
+        "mp3_artist",
+        "mp3_album_artist",
+        "mp3_album",
+        "mp3_track_number",
+        "itunes_artist",
+        "itunes_album_artist",
+        "itunes_album",
+        "itunes_track_number",
+        "issues",
+        "artist_score",
+        "album_artist_score",
+        "album_score",
+    ]
+
+    with out.open("w", newline="", encoding="utf-8") as f:
+        writer = _csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for d in discrepancies:
+            row = d.model_dump()
+            row["issues"] = "|".join(d.issues)
+            writer.writerow(row)
+
+    total = len(discrepancies)
+    by_issue: dict[str, int] = {}
+    for d in discrepancies:
+        for issue in d.issues:
+            by_issue[issue] = by_issue.get(issue, 0) + 1
+
+    click.echo(f"[+] {total} discrepancy row(s) found.")
+    for issue_name, count in sorted(by_issue.items()):
+        click.echo(f"    {issue_name}: {count}")
+    click.echo(f"[+] Report written to {out}")
+    click.echo("\n[SUCCESS] audit-itunes complete.")
+
+
 if __name__ == "__main__":
     cli()
