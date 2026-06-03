@@ -53,7 +53,12 @@ class TestItunesLibraryLookup:
     def test_lookup_found(self, tmp_path: Path) -> None:
         xml = tmp_path / "library.xml"
         _write_plist(
-            xml, {"1": _make_track(location="file:///M:/Shared%20Music/Artist/Album/01%20Song.mp3")}
+            xml,
+            {
+                "1": _make_track(
+                    location="file://localhost/M:/Shared%20Music/Artist/Album/01%20Song.mp3"
+                )
+            },
         )
         lib = ItunesLibrary(xml)
         result = lib.lookup(Path("M:/Shared Music/Artist/Album/01 Song.mp3"))
@@ -63,7 +68,12 @@ class TestItunesLibraryLookup:
     def test_lookup_not_found(self, tmp_path: Path) -> None:
         xml = tmp_path / "library.xml"
         _write_plist(
-            xml, {"1": _make_track(location="file:///M:/Shared%20Music/Artist/Album/01%20Song.mp3")}
+            xml,
+            {
+                "1": _make_track(
+                    location="file://localhost/M:/Shared%20Music/Artist/Album/01%20Song.mp3"
+                )
+            },
         )
         lib = ItunesLibrary(xml)
         result = lib.lookup(Path("M:/Shared Music/OtherArtist/Album/02 Other.mp3"))
@@ -72,7 +82,12 @@ class TestItunesLibraryLookup:
     def test_lookup_case_insensitive(self, tmp_path: Path) -> None:
         xml = tmp_path / "library.xml"
         _write_plist(
-            xml, {"1": _make_track(location="file:///M:/Shared%20Music/ARTIST/Album/01%20Song.mp3")}
+            xml,
+            {
+                "1": _make_track(
+                    location="file://localhost/M:/Shared%20Music/ARTIST/Album/01%20Song.mp3"
+                )
+            },
         )
         lib = ItunesLibrary(xml)
         # Lookup with different casing
@@ -81,7 +96,9 @@ class TestItunesLibraryLookup:
 
     def test_tracks_with_no_location_are_skipped(self, tmp_path: Path) -> None:
         xml = tmp_path / "library.xml"
-        track = _make_track(location="file:///M:/Shared%20Music/Artist/Album/01%20Song.mp3")
+        track = _make_track(
+            location="file://localhost/M:/Shared%20Music/Artist/Album/01%20Song.mp3"
+        )
         no_loc = {k: v for k, v in track.items() if k != "Location"}
         _write_plist(xml, {"1": no_loc, "2": track})
         lib = ItunesLibrary(xml)
@@ -94,7 +111,7 @@ class TestItunesLibraryLookup:
             xml,
             {
                 "1": _make_track(
-                    location="file:///M:/Shared%20Music/Jay-Z/The%20Blueprint/01%20The%20Ruler%27s%20Back.mp3"
+                    location="file://localhost/M:/Shared%20Music/Jay-Z/The%20Blueprint/01%20The%20Ruler%27s%20Back.mp3"
                 )
             },
         )
@@ -108,7 +125,7 @@ class TestItunesLibraryLookup:
 # ---------------------------------------------------------------------------
 
 MP3_PATH = Path("M:/Shared Music/Some Artist/Some Album/01 Track.mp3")
-LOCATION = "file:///M:/Shared%20Music/Some%20Artist/Some%20Album/01%20Track.mp3"
+LOCATION = "file://localhost/M:/Shared%20Music/Some%20Artist/Some%20Album/01%20Track.mp3"
 
 
 def _run_compare(
@@ -220,7 +237,12 @@ class TestCompareLibrary:
         xml = tmp_path / "library.xml"
         # Plist has a track at a different path
         _write_plist(
-            xml, {"1": _make_track(location="file:///M:/Shared%20Music/Other/Album/01%20Other.mp3")}
+            xml,
+            {
+                "1": _make_track(
+                    location="file://localhost/M:/Shared%20Music/Other/Album/01%20Other.mp3"
+                )
+            },
         )
 
         with (

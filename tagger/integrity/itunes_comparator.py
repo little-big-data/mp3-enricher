@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import plistlib
+import re
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -61,8 +62,9 @@ class ItunesLibrary:
             loc: str = entry.get("Location", "")
             if not loc:
                 continue
-            # Decode file:/// URL to a filesystem path
-            raw = urllib.parse.unquote(loc.removeprefix("file:///"))
+            # Decode file:// URL — iTunes uses file://localhost/M:/... on Windows
+            no_scheme = re.sub(r"^file://(?:localhost/)?", "", loc)
+            raw = urllib.parse.unquote(no_scheme)
             # Path() normalises separators; lower() gives case-insensitive lookup
             win_path = str(Path(raw)).lower()
             self._index[win_path] = entry
