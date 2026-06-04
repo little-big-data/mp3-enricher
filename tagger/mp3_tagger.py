@@ -32,18 +32,24 @@ from tagger.manual.csv_handler import CsvHandler
 from tagger.scanner.folder_parser import parse_folder_names
 from tagger.scanner.id3_reader import read_id3_tags
 from tagger.scanner.walker import find_album_dirs, find_mp3_files
-from tagger.utils.rate_limiter import TokenBucket
+from tagger.utils.rate_limiter import TokenBucket, TokenBucketRateLimiter
 from tagger.writer.id3_writer import ID3Writer
 from tagger.writer.track_number_fixer import fix_track_numbers
-
-# Discogs allows ~60 authenticated requests/minute.  We pace to 55/min
-# (~0.92 req/s) to stay comfortably under the limit.  The retry decorator
-# in DiscogsClient handles any 429s that still slip through.
-_DISCOGS_RATE_LIMITER = TokenBucket(rate=0.92, capacity=5)
 
 # MusicBrainz asks all clients to stay at or below 1 req/s.  We use a
 # capacity of 1 so we never fire a burst of requests on startup.
 _MB_RATE_LIMITER = TokenBucket(rate=1.0, capacity=1)
+
+
+def _make_discogs_rate_limiter(settings: Settings) -> TokenBucketRateLimiter:
+    """Build a TokenBucketRateLimiter from settings.discogs_requests_per_minute.
+
+    Rate is computed as requests_per_minute / 60 (tokens per second).
+    Burst capacity is always 10 to absorb short bursts without throttling.
+    """
+    rate = settings.discogs_requests_per_minute / 60.0
+    return TokenBucketRateLimiter(rate=rate, capacity=10)
+
 
 log = structlog.get_logger(__name__)
 
@@ -150,7 +156,7 @@ def enrich(
     track_repo = TrackRepository(conn)
     manual_repo = ManualReviewRepository(conn)
 
-    client = DiscogsClient(token=discogs_token, rate_limiter=_DISCOGS_RATE_LIMITER)
+    client = DiscogsClient(token=discogs_token, rate_limiter=_make_discogs_rate_limiter(settings))
     pipeline = EnrichmentPipeline(
         album_repo=album_repo,
         track_repo=track_repo,
@@ -319,7 +325,7 @@ def fix(folder_path: Path, db_path: Path, token: str | None, starts_with: str | 
     album_repo = AlbumRepository(conn)
     track_repo = TrackRepository(conn)
 
-    client = DiscogsClient(token=discogs_token, rate_limiter=_DISCOGS_RATE_LIMITER)
+    client = DiscogsClient(token=discogs_token, rate_limiter=_make_discogs_rate_limiter(settings))
     pipeline = EnrichmentPipeline(
         album_repo=album_repo,
         track_repo=track_repo,
@@ -435,7 +441,7 @@ def process_manual(db_path: Path, token: str | None, csv_path: Path) -> None:
     album_repo = AlbumRepository(conn)
     track_repo = TrackRepository(conn)
     manual_repo = ManualReviewRepository(conn)
-    client = DiscogsClient(token=discogs_token, rate_limiter=_DISCOGS_RATE_LIMITER)
+    client = DiscogsClient(token=discogs_token, rate_limiter=_make_discogs_rate_limiter(settings))
     scraper = WebScraper()
     enricher = HeuristicEnricher()
     mb_client = MusicBrainzClient(rate_limiter=_MB_RATE_LIMITER)
@@ -806,7 +812,7 @@ def retry_not_found(
         click.echo("[*] Dry-run — no enrichment performed.")
         return
 
-    client = DiscogsClient(token=discogs_token, rate_limiter=_DISCOGS_RATE_LIMITER)
+    client = DiscogsClient(token=discogs_token, rate_limiter=_make_discogs_rate_limiter(settings))
     manual_repo = ManualReviewRepository(conn)
     pipeline = EnrichmentPipeline(
         album_repo=album_repo,
@@ -881,7 +887,7 @@ def prefill_master_urls_cmd(csv_path: Path, db_path: Path, token: str | None) ->
         click.echo(f"[-] CSV not found: {csv_path}")
         return
 
-    client = DiscogsClient(token=discogs_token, rate_limiter=_DISCOGS_RATE_LIMITER)
+    client = DiscogsClient(token=discogs_token, rate_limiter=_make_discogs_rate_limiter(settings))
     conn = get_db_connection(db_path)
     run_migrations(conn)
 
@@ -970,7 +976,7 @@ def enrich_missing(csv_path: Path, db_path: Path, token: str | None) -> None:
 
     click.echo(f"[+] {len(artist_dirs)} artist dir(s) to scan.")
 
-    client = DiscogsClient(token=discogs_token, rate_limiter=_DISCOGS_RATE_LIMITER)
+    client = DiscogsClient(token=discogs_token, rate_limiter=_make_discogs_rate_limiter(settings))
     pipeline = EnrichmentPipeline(
         album_repo=album_repo,
         track_repo=track_repo,
