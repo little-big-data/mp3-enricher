@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from collections.abc import Callable  # noqa: TC003
 from typing import Any
 
@@ -24,19 +25,25 @@ def _discogs_wait(retry_state: tenacity.RetryCallState) -> float:
 
     Prefers the ``retry_after`` value carried by :class:`RateLimitError`
     (populated from the ``Retry-After`` response header).  Falls back to
-    exponential back-off when the header is absent.
+    exponential back-off with full jitter when the header is absent.
+
+    The ``Retry-After`` path is NOT jittered — the server's instruction is
+    honoured exactly.  The exponential fallback applies full jitter
+    (``random.uniform(0, computed_wait)``) to spread parallel retries.
     """
     outcome = retry_state.outcome
     exc = outcome.exception() if outcome is not None else None
-    if isinstance(exc, RateLimitError) and exc.retry_after:
+    if isinstance(exc, RateLimitError) and exc.retry_after is not None:
         return float(exc.retry_after)
-    return _fallback_wait(retry_state)
+    computed = _fallback_wait(retry_state)
+    return random.uniform(0, computed)
 
 
 def _log_before_sleep(retry_state: tenacity.RetryCallState) -> None:
     outcome = retry_state.outcome
     exc = outcome.exception() if outcome is not None else None
-    wait_secs = _discogs_wait(retry_state)
+    next_action = retry_state.next_action
+    wait_secs = next_action.sleep if next_action is not None else 0.0
     log.warning(
         "discogs.retrying",
         attempt=retry_state.attempt_number,
