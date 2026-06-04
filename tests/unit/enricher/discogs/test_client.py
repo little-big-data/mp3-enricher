@@ -6,7 +6,8 @@ import pytest
 from pytest_httpx import HTTPXMock
 
 from tagger.enricher.discogs.client import DiscogsClient
-from tagger.exceptions import RateLimitError
+from tagger.exceptions import DiscogsServerError, RateLimitError, TransientAPIError
+from tagger.utils.rate_limiter import TokenBucketRateLimiter
 
 
 @pytest.fixture
@@ -141,6 +142,7 @@ def test_get_master_releases_parses_format_string(
 
 
 def test_search_album_calls_rate_limiter(httpx_mock: HTTPXMock) -> None:
+    """_throttle must call acquire() (updated from wait_and_consume) — Subtask 1."""
     rate_limiter = MagicMock()
     client = DiscogsClient(token="test", rate_limiter=rate_limiter)
     httpx_mock.add_response(
@@ -148,10 +150,11 @@ def test_search_album_calls_rate_limiter(httpx_mock: HTTPXMock) -> None:
         json={"results": []},
     )
     client.search_album("A", "B")
-    rate_limiter.wait_and_consume.assert_called_once()
+    rate_limiter.acquire.assert_called_once()
 
 
 def test_get_release_calls_rate_limiter(httpx_mock: HTTPXMock) -> None:
+    """_throttle must call acquire() on get_release path — Subtask 1."""
     rate_limiter = MagicMock()
     client = DiscogsClient(token="test", rate_limiter=rate_limiter)
     httpx_mock.add_response(
@@ -165,7 +168,7 @@ def test_get_release_calls_rate_limiter(httpx_mock: HTTPXMock) -> None:
         },
     )
     client.get_release(1)
-    rate_limiter.wait_and_consume.assert_called_once()
+    rate_limiter.acquire.assert_called_once()
 
 
 def test_no_rate_limiter_does_not_fail(httpx_mock: HTTPXMock) -> None:
@@ -177,6 +180,69 @@ def test_no_rate_limiter_does_not_fail(httpx_mock: HTTPXMock) -> None:
     )
     results = client.search_album("A", "B")
     assert results == []
+
+
+# ---------------------------------------------------------------------------
+# Subtask 1: DiscogsServerError alias and TokenBucketRateLimiter / acquire()
+# ---------------------------------------------------------------------------
+
+
+def test_discogs_server_error_is_importable() -> None:
+    """DiscogsServerError must be exported from tagger.exceptions."""
+    assert DiscogsServerError is not None
+
+
+def test_discogs_server_error_is_transient_api_error() -> None:
+    """DiscogsServerError must be the same class as TransientAPIError."""
+    assert DiscogsServerError is TransientAPIError
+
+
+def test_discogs_server_error_isinstance_check() -> None:
+    """An instance of TransientAPIError must satisfy isinstance(…, DiscogsServerError)."""
+    err = TransientAPIError(service="discogs", status_code=503)
+    assert isinstance(err, DiscogsServerError)
+
+
+def test_discogs_client_accepts_token_bucket_rate_limiter(httpx_mock: HTTPXMock) -> None:
+    """DiscogsClient must accept a TokenBucketRateLimiter in its constructor."""
+    limiter = TokenBucketRateLimiter(rate=100.0, capacity=10.0)
+    client = DiscogsClient(token="test", rate_limiter=limiter)
+    httpx_mock.add_response(
+        url="https://api.discogs.com/database/search?artist=A&release_title=B&type=release",
+        json={"results": []},
+    )
+    results = client.search_album("A", "B")
+    assert results == []
+
+
+def test_search_album_calls_acquire_on_rate_limiter(httpx_mock: HTTPXMock) -> None:
+    """DiscogsClient._throttle must call acquire() (not wait_and_consume()) on the limiter."""
+    rate_limiter = MagicMock(spec=TokenBucketRateLimiter)
+    client = DiscogsClient(token="test", rate_limiter=rate_limiter)
+    httpx_mock.add_response(
+        url="https://api.discogs.com/database/search?artist=A&release_title=B&type=release",
+        json={"results": []},
+    )
+    client.search_album("A", "B")
+    rate_limiter.acquire.assert_called_once()
+
+
+def test_get_release_calls_acquire_on_rate_limiter(httpx_mock: HTTPXMock) -> None:
+    """DiscogsClient._throttle must call acquire() on get_release path."""
+    rate_limiter = MagicMock(spec=TokenBucketRateLimiter)
+    client = DiscogsClient(token="test", rate_limiter=rate_limiter)
+    httpx_mock.add_response(
+        url="https://api.discogs.com/releases/1",
+        json={
+            "id": 1,
+            "title": "Album",
+            "artists": [],
+            "tracklist": [],
+            "resource_url": "https://api.discogs.com/releases/1",
+        },
+    )
+    client.get_release(1)
+    rate_limiter.acquire.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

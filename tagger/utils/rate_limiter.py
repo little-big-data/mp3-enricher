@@ -4,7 +4,7 @@ import threading
 import time
 
 
-class TokenBucket:
+class TokenBucketRateLimiter:
     """A token bucket rate limiter."""
 
     def __init__(self, rate: float, capacity: float) -> None:
@@ -34,3 +34,11 @@ class TokenBucket:
                 return
             # Sleep a bit before trying again
             time.sleep(1.0 / self.rate)
+
+    def acquire(self, amount: float = 1.0) -> None:
+        """Block until a token is available and consume it (alias for wait_and_consume)."""
+        self.wait_and_consume(amount)
+
+
+# Backward-compatibility alias
+TokenBucket = TokenBucketRateLimiter

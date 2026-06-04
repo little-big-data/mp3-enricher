@@ -9,7 +9,7 @@ from tagger.exceptions import RateLimitError, TransientAPIError
 from tagger.utils.retry import retry_on_rate_limit
 
 if TYPE_CHECKING:
-    from tagger.utils.rate_limiter import TokenBucket
+    from tagger.utils.rate_limiter import TokenBucketRateLimiter
 
 
 def _split_format(raw: list[str] | str) -> list[str]:
@@ -26,7 +26,7 @@ def _split_format(raw: list[str] | str) -> list[str]:
 class DiscogsClient:
     BASE_URL = "https://api.discogs.com"
 
-    def __init__(self, token: str, rate_limiter: TokenBucket | None = None) -> None:
+    def __init__(self, token: str, rate_limiter: TokenBucketRateLimiter | None = None) -> None:
         self._token = token
         self._rate_limiter = rate_limiter
         self._client = httpx.Client(
@@ -39,7 +39,7 @@ class DiscogsClient:
     def _throttle(self) -> None:
         """Block until the rate limiter grants a token."""
         if self._rate_limiter is not None:
-            self._rate_limiter.wait_and_consume()
+            self._rate_limiter.acquire()
 
     def _raise_for_status(self, response: httpx.Response) -> None:
         """Raise domain errors for retryable codes; re-raise others normally."""

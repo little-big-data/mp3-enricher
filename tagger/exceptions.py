@@ -48,3 +48,7 @@ class DatabaseError(TaggerError):
 
 class FileProcessError(TaggerError):
     """Errors related to file reading/writing."""
+
+
+# Alias for TransientAPIError — satisfies the public API name used in issue AC
+DiscogsServerError = TransientAPIError

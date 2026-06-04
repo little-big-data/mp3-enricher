@@ -25,6 +25,14 @@ class Settings(BaseSettings):
     llm_provider: Literal["claude", "gemini"] = "claude"
 
     retry_not_found: bool = False
+    discogs_requests_per_minute: int = 60
+
+    @field_validator("discogs_requests_per_minute", mode="after")
+    @classmethod
+    def discogs_rpm_must_be_in_range(cls, v: int) -> int:
+        if not (1 <= v <= 300):
+            raise ValueError(f"discogs_requests_per_minute must be 1-300, got {v}")
+        return v
 
     @field_validator("workers", mode="after")
     @classmethod
