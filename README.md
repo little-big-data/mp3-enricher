@@ -34,6 +34,7 @@ See [Step-by-step usage](#step-by-step-usage) for a full walkthrough including m
   - [Step 2 — Write tags to disk](#step-2--write-tags-to-disk)
   - [Step 3 — Handle albums that weren't matched](#step-3--handle-albums-that-werent-matched)
 - [Command reference](#command-reference)
+- [Repairing corrupted tags from iTunes](#repairing-corrupted-tags-from-itunes)
 - [Tips and troubleshooting](#tips-and-troubleshooting)
 
 ---
@@ -359,6 +360,8 @@ python -m tagger.mp3_tagger write
 | `retry-not-found` | Re-run enrichment on all `not_found` albums in DB |
 | `prefill-master-urls --csv <file>` | Pre-fill Discogs URLs in a manual-review CSV |
 | `enrich-missing --csv <file>` | Scan artist dirs missing from DB (run before `process-manual`) |
+| `audit-itunes --library <path> --itunes-xml <path>` | Compare current MP3 tags against iTunes Library XML; write discrepancy CSV |
+| `restore-from-itunes --library <path> --itunes-xml <path>` | Restore Artist, Album Artist, Album, and Track Number from iTunes ground truth |
 
 All commands share `--db-path` to point at a specific database file. The default is `tester.db` in the current directory.
 
@@ -441,6 +444,119 @@ Options:
   --db-path PATH       Database (default: tester.db)
   --token TEXT         Discogs token (overrides .env)
 ```
+
+---
+
+## Repairing corrupted tags from iTunes
+
+If a previous enrichment run overwrote Artist, Album Artist, Album, or track numbers with wrong values, you can use your iTunes library as a ground-truth reference to find and fix the damage. This workflow requires an exported iTunes Music Library XML file.
+
+### Where to find your iTunes XML
+
+In iTunes / Music on Windows:
+**Edit → Preferences → Advanced → "iTunes Media folder location"**. The XML file (`iTunes Music Library.xml`) lives in the same folder as your `.itl` file — typically:
+
+```
+C:\Users\<you>\Music\iTunes\iTunes Music Library.xml
+```
+
+If the file doesn't exist, open iTunes, go to **File → Library → Export Library…** and save it as XML.
+
+### Step 1 — Audit (find the discrepancies)
+
+```powershell
+python tagger/mp3_tagger.py audit-itunes `
+    --library "M:\Shared Music" `
+    --itunes-xml "C:\Users\you\Music\iTunes\iTunes Music Library.xml" `
+    --out itunes_audit.csv
+```
+
+This walks your library, reads each MP3's current ID3 tags, and fuzzy-matches them against the iTunes record for the same file. It writes `itunes_audit.csv` with one row per file that has at least one problem.
+
+**Output columns:**
+
+| Column | Description |
+|---|---|
+| `file_path` | Full path to the MP3 |
+| `mp3_artist` / `itunes_artist` | Current tag vs iTunes value |
+| `mp3_album_artist` / `itunes_album_artist` | Current tag vs iTunes value |
+| `mp3_album` / `itunes_album` | Current tag vs iTunes value |
+| `mp3_track_number` / `itunes_track_number` | Current tag vs iTunes value |
+| `issues` | Pipe-separated list: `artist_mismatch`, `album_artist_mismatch`, `album_mismatch`, `missing_track_number`, `itunes_not_found` |
+| `artist_score` / `album_score` / `album_artist_score` | Fuzzy similarity 0–100 (100 = identical) |
+
+**Console summary example:**
+```
+[+] 1 247 discrepancy row(s) found.
+    album_mismatch: 843
+    artist_mismatch: 312
+    missing_track_number: 4 102
+[+] Report written to itunes_audit.csv
+```
+
+**Options:**
+```
+--library PATH        Music library root (required)
+--itunes-xml PATH     Path to iTunes Music Library.xml (required)
+--out PATH            Output CSV (default: itunes_audit.csv)
+--threshold INT       Fuzzy score below which a field is flagged (default: 75)
+--workers INT         Parallel tag-read threads (default: 4)
+```
+
+### Step 2 — Dry-run restore (preview the fixes)
+
+```powershell
+python tagger/mp3_tagger.py restore-from-itunes `
+    --library "M:\Shared Music" `
+    --itunes-xml "C:\Users\you\Music\iTunes\iTunes Music Library.xml" `
+    --out restore_report.csv `
+    --dry-run
+```
+
+`--dry-run` runs the full comparison and writes the report CSV showing exactly what *would* change — without modifying any files. Review `restore_report.csv` before proceeding.
+
+**Report columns:**
+
+| Column | Description |
+|---|---|
+| `file_path` | Full path to the MP3 |
+| `fields_restored` | Pipe-separated list of fields that were (or would be) fixed |
+| `old_artist` / `new_artist` | Before and after for the Artist tag |
+| `old_album_artist` / `new_album_artist` | Before and after for Album Artist |
+| `old_album` / `new_album` | Before and after for Album |
+| `old_track_number` / `new_track_number` | Before and after for Track Number |
+| `dry_run` | `True` when run with `--dry-run` |
+
+### Step 3 — Apply the fixes
+
+Once you're satisfied with the dry-run report, run without `--dry-run` to write the corrections:
+
+```powershell
+python tagger/mp3_tagger.py restore-from-itunes `
+    --library "M:\Shared Music" `
+    --itunes-xml "C:\Users\you\Music\iTunes\iTunes Music Library.xml" `
+    --out restore_report.csv
+```
+
+Only the affected ID3 frames are overwritten. Every other tag (genre, year, grouping, artwork, etc.) is left exactly as-is.
+
+**Track number fallback:** If iTunes has no track number for a file, the restorer attempts to parse it from the filename prefix — e.g. `03 Song.mp3` → track 3, `2-05 Song.mp3` → disc 2 track 5.
+
+**Options:**
+```
+--library PATH        Music library root (required)
+--itunes-xml PATH     Path to iTunes Music Library.xml (required)
+--out PATH            Output report CSV (default: itunes_restore_report.csv)
+--threshold INT       Fuzzy score below which a field is treated as mismatched (default: 75)
+--workers INT         Parallel tag-read threads (default: 4)
+--dry-run             Preview without writing any files
+```
+
+### Notes
+
+- Files not found in the iTunes index (`itunes_not_found`) are skipped by the restorer — it only writes values it can verify against iTunes.
+- Both commands are idempotent — re-running after a partial failure is safe.
+- The `--threshold` option controls sensitivity. The default of 75 flags clear mismatches while ignoring minor formatting differences (e.g. `The Beatles` vs `Beatles, The`). Lower it to catch more subtle corruption; raise it if you're seeing false positives.
 
 ---
 

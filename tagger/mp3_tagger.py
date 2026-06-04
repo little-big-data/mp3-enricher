@@ -1187,5 +1187,214 @@ def link_scan(db_path: Path, artist: str | None, dry_run: bool, no_llm: bool) ->
     click.echo("[*] Run 'write' to flush changes to ID3 tags.")
 
 
+@cli.command("audit-itunes")
+@click.option(
+    "--library",
+    "library_path",
+    required=True,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help=r"Path to the music library root (e.g. M:\Shared Music).",
+)
+@click.option(
+    "--itunes-xml",
+    "itunes_xml",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Path to iTunes Music Library.xml.",
+)
+@click.option(
+    "--out",
+    type=Path,
+    default=Path("itunes_audit.csv"),
+    show_default=True,
+    help="Output CSV path.",
+)
+@click.option(
+    "--threshold",
+    type=int,
+    default=75,
+    show_default=True,
+    help="Fuzzy-match score below which a field is flagged as mismatched.",
+)
+@click.option(
+    "--workers",
+    type=int,
+    default=4,
+    show_default=True,
+    help="Number of threads for parallel ID3 tag reading.",
+)
+def audit_itunes(
+    library_path: Path,
+    itunes_xml: Path,
+    out: Path,
+    threshold: int,
+    workers: int,
+) -> None:
+    """Compare MP3 ID3 tags against an iTunes XML library record.
+
+    Surfaces Artist / Album Artist / Album discrepancies and missing track
+    numbers by fuzzy-matching current ID3 tags against the iTunes ground-truth
+    record.  Writes a CSV report to --out.
+    """
+    import csv as _csv
+
+    from tagger.integrity.itunes_comparator import compare_library
+
+    click.echo(f"[*] Loading iTunes library from {itunes_xml} ...")
+    click.echo(f"[*] Scanning {library_path} with {workers} worker(s) ...")
+
+    discrepancies = compare_library(
+        library_path=library_path,
+        itunes_xml=itunes_xml,
+        threshold=threshold,
+        workers=workers,
+    )
+
+    fieldnames = [
+        "file_path",
+        "artist_folder",
+        "album_folder",
+        "mp3_artist",
+        "mp3_album_artist",
+        "mp3_album",
+        "mp3_track_number",
+        "itunes_artist",
+        "itunes_album_artist",
+        "itunes_album",
+        "itunes_track_number",
+        "issues",
+        "artist_score",
+        "album_artist_score",
+        "album_score",
+    ]
+
+    with out.open("w", newline="", encoding="utf-8") as f:
+        writer = _csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for d in discrepancies:
+            row = d.model_dump()
+            row["issues"] = "|".join(d.issues)
+            writer.writerow(row)
+
+    total = len(discrepancies)
+    by_issue: dict[str, int] = {}
+    for d in discrepancies:
+        for issue in d.issues:
+            by_issue[issue] = by_issue.get(issue, 0) + 1
+
+    click.echo(f"[+] {total} discrepancy row(s) found.")
+    for issue_name, count in sorted(by_issue.items()):
+        click.echo(f"    {issue_name}: {count}")
+    click.echo(f"[+] Report written to {out}")
+    click.echo("\n[SUCCESS] audit-itunes complete.")
+
+
+@cli.command("restore-from-itunes")
+@click.option(
+    "--library",
+    "library_path",
+    required=True,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help=r"Path to the music library root (e.g. M:\Shared Music).",
+)
+@click.option(
+    "--itunes-xml",
+    "itunes_xml",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Path to iTunes Music Library.xml.",
+)
+@click.option(
+    "--out",
+    type=Path,
+    default=Path("itunes_restore_report.csv"),
+    show_default=True,
+    help="Output CSV path for the restore report.",
+)
+@click.option(
+    "--threshold",
+    type=int,
+    default=75,
+    show_default=True,
+    help="Fuzzy-match score below which a field is considered mismatched.",
+)
+@click.option(
+    "--workers",
+    type=int,
+    default=4,
+    show_default=True,
+    help="Number of threads for parallel ID3 tag reading.",
+)
+@click.option("--dry-run", is_flag=True, help="Preview changes without writing any files.")
+def restore_from_itunes_cmd(
+    library_path: Path,
+    itunes_xml: Path,
+    out: Path,
+    threshold: int,
+    workers: int,
+    dry_run: bool,
+) -> None:
+    """Restore corrupted MP3 tags from an iTunes Music Library XML record.
+
+    Compares current ID3 tags against the iTunes ground-truth and writes the
+    correct Artist, Album Artist, Album, and Track Number values back to each
+    affected MP3.  Only the mismatched frames are overwritten; all other tags
+    are preserved.  Use --dry-run to preview without modifying any files.
+    """
+    import csv as _csv
+
+    from tagger.integrity.itunes_restorer import restore_from_itunes
+
+    if dry_run:
+        click.echo("[*] Dry-run mode — no files will be modified.")
+    click.echo(f"[*] Loading iTunes library from {itunes_xml} ...")
+    click.echo(f"[*] Scanning {library_path} with {workers} worker(s) ...")
+
+    results = restore_from_itunes(
+        itunes_xml=itunes_xml,
+        library_path=library_path,
+        threshold=threshold,
+        workers=workers,
+        dry_run=dry_run,
+    )
+
+    fieldnames = [
+        "file_path",
+        "artist_folder",
+        "album_folder",
+        "fields_restored",
+        "old_artist",
+        "new_artist",
+        "old_album_artist",
+        "new_album_artist",
+        "old_album",
+        "new_album",
+        "old_track_number",
+        "new_track_number",
+        "dry_run",
+    ]
+
+    with out.open("w", newline="", encoding="utf-8") as f:
+        writer = _csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for r in results:
+            row = r.model_dump()
+            row["fields_restored"] = "|".join(r.fields_restored)
+            writer.writerow(row)
+
+    total = len(results)
+    by_field: dict[str, int] = {}
+    for r in results:
+        for field in r.fields_restored:
+            by_field[field] = by_field.get(field, 0) + 1
+
+    action = "Would restore" if dry_run else "Restored"
+    click.echo(f"[+] {action} {total} file(s).")
+    for field, count in sorted(by_field.items()):
+        click.echo(f"    {field}: {count}")
+    click.echo(f"[+] Report written to {out}")
+    click.echo(f"\n[SUCCESS] restore-from-itunes {'(dry run) ' if dry_run else ''}complete.")
+
+
 if __name__ == "__main__":
     cli()
