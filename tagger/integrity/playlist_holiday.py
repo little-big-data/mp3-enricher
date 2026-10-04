@@ -51,6 +51,7 @@ class PlaylistAuditResult(BaseModel):
     already_tagged: int = 0
     mismatches: int = 0
     errors: int = 0
+    skipped: int = 0
 
 
 def _score(itunes_value: str | None, id3_value: str | None) -> int:
@@ -75,9 +76,20 @@ def _process_track(
     """Read, compare and (unless dry run) tag one track.
 
     Returns the audit row (None when the track has no issue) and an outcome of
-    ``tagged``, ``already_tagged``, ``file_missing`` or ``write_error``.
+    ``tagged``, ``already_tagged``, ``not_mp3``, ``file_missing`` or ``write_error``.
     """
     path = Path(track.file_path)
+    if path.suffix.lower() != ".mp3":
+        # ID3 frames must never be written into other containers (e.g. .m4a).
+        log.warning("playlist_holiday.not_mp3", file_path=track.file_path)
+        row = PlaylistAuditRow(
+            file_path=track.file_path,
+            itunes_name=track.name,
+            itunes_artist=track.artist,
+            itunes_album=track.album,
+            issues=["not_mp3"],
+        )
+        return row, "not_mp3"
     if not path.is_file():
         log.warning("playlist_holiday.file_missing", file_path=track.file_path)
         row = PlaylistAuditRow(
@@ -182,6 +194,8 @@ def apply_holiday_and_audit(
                 result.tagged += 1
             elif outcome == "already_tagged":
                 result.already_tagged += 1
+            elif outcome == "not_mp3":
+                result.skipped += 1
             if row is None:
                 continue
             result.rows.append(row)
@@ -197,5 +211,6 @@ def apply_holiday_and_audit(
         already_tagged=result.already_tagged,
         mismatches=result.mismatches,
         errors=result.errors,
+        skipped=result.skipped,
     )
     return result

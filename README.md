@@ -575,7 +575,9 @@ python tagger/mp3_tagger.py playlist-holiday `
     --dry-run
 ```
 
-The playlist is a folder path as shown in iTunes (segments separated by `/`, case-insensitive). The same run also compares each track's iTunes Name / Artist / Album with its ID3 title / artist / album and writes `playlist_holiday_audit.csv` (one row per track with an issue: `title_mismatch`, `artist_mismatch`, `album_mismatch`, `file_missing`, `write_error`, pipe-joined). The CSV is written on a dry run too.
+The playlist is a folder path as shown in iTunes (segments separated by `/`, case-insensitive). The same run also compares each track's iTunes Name / Artist / Album with its ID3 title / artist / album and writes `playlist_holiday_audit.csv` (one row per track with an issue: `title_mismatch`, `artist_mismatch`, `album_mismatch`, `file_missing`, `write_error`, `not_mp3`, pipe-joined). The CSV is written on a dry run too.
+
+Only `.mp3` files are tagged. Any other file type in the playlist (for example `.m4a`) is left untouched, listed in the CSV as `not_mp3`, and counted on a `Skipped (not .mp3): N` line.
 
 **Options:**
 ```

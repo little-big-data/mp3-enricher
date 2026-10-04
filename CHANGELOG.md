@@ -12,7 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `playlist-holiday` command: resolves an iTunes playlist by folder path (e.g. `Genre/Halloween`),
   adds `Holiday:<holiday>` to each member MP3's GRP1/TIT1 grouping (idempotent, merged into an
   existing `Holiday:` segment), mirrors it into `tracks.grouping`, and writes a CSV of tracks whose
-  ID3 title/artist/album fuzzy-differ from iTunes. Supports `--dry-run`.
+  ID3 title/artist/album fuzzy-differ from iTunes. Supports `--dry-run`. Non-`.mp3` files in the
+  playlist are skipped untouched and reported as `not_mp3`.
 
 ## [0.1.0] - 2026-04-24
 

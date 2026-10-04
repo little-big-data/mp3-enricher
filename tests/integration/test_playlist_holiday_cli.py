@@ -248,6 +248,27 @@ def test_rerun_reports_nothing_newly_tagged(scenario: dict[str, Path]) -> None:
 
 
 @pytest.mark.integration
+def test_non_mp3_files_are_skipped_and_reported(tmp_path: Path) -> None:
+    music = tmp_path / "music"
+    mp3 = _make_mp3(music / "01 Ghost.mp3", title="Ghost", grouping="Gender:Male")
+    m4a = music / "02 Song.m4a"
+    m4a.write_bytes(b"mp4 container bytes")
+    before = m4a.read_bytes()
+    xml = _write_xml(tmp_path, [(mp3, "Ghost"), (m4a, "Song")])
+    db = tmp_path / "library.db"
+    _seed_db(db, [mp3])
+    s = {"xml": xml, "db": db, "out": tmp_path / "audit.csv"}
+
+    result = _invoke(s)
+
+    assert result.exit_code == 0, result.output
+    assert m4a.read_bytes() == before
+    assert "Skipped (not .mp3): 1" in result.output
+    assert "Tagged: 1 | Already tagged: 0 | Mismatches: 0 | Errors: 0" in result.output
+    assert "not_mp3" in s["out"].read_text(encoding="utf-8")
+
+
+@pytest.mark.integration
 def test_dry_run_leaves_files_and_db_untouched(scenario: dict[str, Path]) -> None:
     before = scenario["good"].read_bytes()
 

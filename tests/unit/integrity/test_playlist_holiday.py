@@ -449,6 +449,35 @@ def test_missing_file_is_reported_and_others_continue(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("name", ["song.m4a", "song.M4A", "song.flac", "song"])
+def test_non_mp3_is_skipped_untouched_and_reported(
+    tmp_path: Path, conn: sqlite3.Connection, repo: TrackRepository, name: str
+) -> None:
+    other = tmp_path / name
+    other.write_bytes(b"not an mp3 container \x00\x01")
+    before = other.read_bytes()
+    _add_db_track(conn, other, grouping="Jamaica, Halloween")
+    present = _make_mp3(tmp_path / "here.mp3")
+    lib = _build_library(
+        tmp_path, [(other, "Song", "Artist", "Album"), (present, "Ghost", "Artist", "Album")]
+    )
+
+    result = _run(lib, repo)
+
+    assert other.read_bytes() == before
+    assert _db_grouping(repo, other) == "Jamaica, Halloween"
+    (row,) = result.rows
+    assert row.file_path == str(other)
+    assert row.issues == ["not_mp3"]
+    assert row.itunes_name == "Song"
+    assert row.id3_title is None
+    assert result.skipped == 1
+    assert result.errors == 0
+    assert result.tagged == 1
+    assert _frames(present)[0] == "Holiday:Halloween"
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "exc",
     [PermissionError(13, "denied"), OSError(5, "I/O error"), MutagenError("corrupt")],

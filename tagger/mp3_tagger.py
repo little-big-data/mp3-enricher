@@ -1422,6 +1422,8 @@ def playlist_holiday(
 
     if dry_run:
         click.echo("[*] --dry-run: no files or database rows were changed.")
+    if result.skipped:
+        click.echo(f"Skipped (not .mp3): {result.skipped}")
     click.echo(
         f"Tagged: {result.tagged} | Already tagged: {result.already_tagged} | "
         f"Mismatches: {result.mismatches} | Errors: {result.errors}"
