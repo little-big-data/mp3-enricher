@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 import pytest
 
 from tagger.db.album_repo import AlbumRepository
-from tagger.db.connection import run_migrations
+from tagger.db.connection import get_db_connection, run_migrations
 from tagger.db.models import AlbumRecord, TrackRecord
 from tagger.db.track_repo import TrackRepository
 
@@ -252,3 +253,121 @@ def test_upsert_track_disc_number_defaults_to_none(
     saved = track_repo.get_by_file_path("/path/single/01 Track.mp3")
     assert saved is not None
     assert saved.disc_number is None
+
+
+# ---------------------------------------------------------------------------
+# update_grouping_by_file_path (playlist-holiday DB mirror)
+# ---------------------------------------------------------------------------
+
+
+def _seed_two_tracks(
+    repos: tuple[AlbumRepository, TrackRepository],
+) -> TrackRepository:
+    album_repo, track_repo = repos
+    with track_repo._conn:
+        album_repo.upsert(AlbumRecord(folder_path="/grp/album"))
+    album = album_repo.get_by_folder_path("/grp/album")
+    assert album is not None
+    assert album.id is not None
+    with track_repo._conn:
+        track_repo.upsert(
+            TrackRecord(
+                album_id=album.id,
+                file_path="/grp/album/01 A.mp3",
+                filename="01 A.mp3",
+                title="Song A",
+                grouping="Gender:Male",
+                enrichment_status="found",
+                written_status="done",
+            )
+        )
+        track_repo.upsert(
+            TrackRecord(
+                album_id=album.id,
+                file_path="/grp/album/02 B.mp3",
+                filename="02 B.mp3",
+                grouping="Gender:Female",
+            )
+        )
+    return track_repo
+
+
+@pytest.mark.unit
+def test_update_grouping_by_file_path_updates_only_that_track(
+    repos: tuple[AlbumRepository, TrackRepository],
+) -> None:
+    track_repo = _seed_two_tracks(repos)
+
+    updated = track_repo.update_grouping_by_file_path(
+        "/grp/album/01 A.mp3", "Gender:Male | Holiday:Halloween"
+    )
+
+    assert updated is True
+    a = track_repo.get_by_file_path("/grp/album/01 A.mp3")
+    b = track_repo.get_by_file_path("/grp/album/02 B.mp3")
+    assert a is not None
+    assert b is not None
+    assert a.grouping == "Gender:Male | Holiday:Halloween"
+    assert b.grouping == "Gender:Female"
+
+
+@pytest.mark.unit
+def test_update_grouping_by_file_path_leaves_other_columns_untouched(
+    repos: tuple[AlbumRepository, TrackRepository],
+) -> None:
+    track_repo = _seed_two_tracks(repos)
+
+    track_repo.update_grouping_by_file_path("/grp/album/01 A.mp3", "Holiday:Halloween")
+
+    a = track_repo.get_by_file_path("/grp/album/01 A.mp3")
+    assert a is not None
+    assert a.title == "Song A"
+    assert a.enrichment_status == "found"
+    assert a.written_status == "done"
+
+
+@pytest.mark.unit
+def test_update_grouping_by_file_path_unknown_path_returns_false(
+    repos: tuple[AlbumRepository, TrackRepository],
+) -> None:
+    track_repo = _seed_two_tracks(repos)
+
+    updated = track_repo.update_grouping_by_file_path("/grp/album/99 Missing.mp3", "Holiday:X")
+
+    assert updated is False
+    a = track_repo.get_by_file_path("/grp/album/01 A.mp3")
+    assert a is not None
+    assert a.grouping == "Gender:Male"
+
+
+@pytest.mark.unit
+def test_update_grouping_by_file_path_is_committed(
+    repos: tuple[AlbumRepository, TrackRepository], tmp_path: Path
+) -> None:
+    """The write runs in its own transaction: a second connection sees it."""
+    track_repo = _seed_two_tracks(repos)
+
+    track_repo.update_grouping_by_file_path("/grp/album/01 A.mp3", "Holiday:Halloween")
+
+    other = get_db_connection(tmp_path / "test.db")
+    try:
+        row = other.execute(
+            "SELECT grouping FROM tracks WHERE file_path = ?", ("/grp/album/01 A.mp3",)
+        ).fetchone()
+    finally:
+        other.close()
+    assert row is not None
+    assert row[0] == "Holiday:Halloween"
+
+
+@pytest.mark.unit
+def test_update_grouping_by_file_path_is_idempotent(
+    repos: tuple[AlbumRepository, TrackRepository],
+) -> None:
+    track_repo = _seed_two_tracks(repos)
+
+    assert track_repo.update_grouping_by_file_path("/grp/album/01 A.mp3", "Holiday:X") is True
+    assert track_repo.update_grouping_by_file_path("/grp/album/01 A.mp3", "Holiday:X") is True
+    a = track_repo.get_by_file_path("/grp/album/01 A.mp3")
+    assert a is not None
+    assert a.grouping == "Holiday:X"

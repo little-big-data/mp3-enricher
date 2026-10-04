@@ -140,3 +140,79 @@ def test_read_id3_tags_v23_invalid_year(mocker: MockerFixture) -> None:
 
     tags = read_id3_tags(Path("fake.mp3"))
     assert tags["year"] is None
+
+
+# ---------------------------------------------------------------------------
+# grouping key (GRP1 preferred, TIT1 fallback)
+# ---------------------------------------------------------------------------
+
+
+def test_read_id3_tags_grouping_prefers_grp1(mocker: MockerFixture) -> None:
+    """GRP1 (iTunes 12.9.1+) wins over TIT1 when both are present."""
+    mock_mp3 = mocker.patch("tagger.scanner.id3_reader.MP3")
+    mock_audio = MagicMock()
+    mock_mp3.return_value = mock_audio
+    mock_audio.tags = {
+        "GRP1": MagicMock(text=["Gender:Male | Holiday:Halloween"]),
+        "TIT1": MagicMock(text=["Gender:Male"]),
+    }
+
+    tags = read_id3_tags(Path("fake.mp3"))
+    assert tags["grouping"] == "Gender:Male | Holiday:Halloween"
+
+
+def test_read_id3_tags_grouping_falls_back_to_tit1(mocker: MockerFixture) -> None:
+    mock_mp3 = mocker.patch("tagger.scanner.id3_reader.MP3")
+    mock_audio = MagicMock()
+    mock_mp3.return_value = mock_audio
+    mock_audio.tags = {"TIT1": MagicMock(text=["Origin:Detroit, US"])}
+
+    tags = read_id3_tags(Path("fake.mp3"))
+    assert tags["grouping"] == "Origin:Detroit, US"
+
+
+def test_read_id3_tags_grouping_empty_grp1_falls_back_to_tit1(mocker: MockerFixture) -> None:
+    mock_mp3 = mocker.patch("tagger.scanner.id3_reader.MP3")
+    mock_audio = MagicMock()
+    mock_mp3.return_value = mock_audio
+    mock_audio.tags = {
+        "GRP1": MagicMock(text=[""]),
+        "TIT1": MagicMock(text=["Label:Def Jam"]),
+    }
+
+    tags = read_id3_tags(Path("fake.mp3"))
+    assert tags["grouping"] == "Label:Def Jam"
+
+
+# Four 144-byte MPEG1 Layer3 frames (32kbps, 32kHz, mono) that mutagen's MP3() can parse
+_REAL_FRAMES = (b"\xff\xfb\x18\xc0" + b"\x00" * 140) * 4
+
+
+def test_read_id3_tags_grouping_from_real_file(tmp_path: Path) -> None:
+    """Round-trip through a real MP3 written with mutagen GRP1 + TIT1 frames.
+
+    A second file with neither GRP1 nor TIT1 yields no grouping value.
+    """
+    from mutagen.id3 import GRP1, ID3, TIT1, TIT2
+
+    path = tmp_path / "real.mp3"
+    path.write_bytes(_REAL_FRAMES)
+    id3 = ID3()
+    id3.add(TIT2(encoding=3, text="Real Song"))
+    id3.add(GRP1(encoding=3, text="Subgenre:Horrorcore"))
+    id3.add(TIT1(encoding=3, text="Subgenre:Old"))
+    id3.save(str(path))
+
+    tags = read_id3_tags(path)
+    assert tags["title"] == "Real Song"
+    assert tags["grouping"] == "Subgenre:Horrorcore"
+
+    # A file with neither GRP1 nor TIT1 has no grouping value.
+    bare = tmp_path / "bare.mp3"
+    bare.write_bytes(_REAL_FRAMES)
+    bare_id3 = ID3()
+    bare_id3.add(TIT2(encoding=3, text="Bare Song"))
+    bare_id3.save(str(bare))
+    bare_tags = read_id3_tags(bare)
+    assert bare_tags["title"] == "Bare Song"
+    assert bare_tags.get("grouping") is None

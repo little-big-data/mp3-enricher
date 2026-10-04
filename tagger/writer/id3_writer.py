@@ -198,33 +198,38 @@ class ID3Writer:
             log.warning("writer.art_missing", art_path=art_path, error=str(exc))
 
     def _save_tags(self, tags: ID3, file_path: str) -> None:
-        """Save tags to disk at the configured ID3 version.
+        """Save tags to disk at the configured ID3 version (see save_id3)."""
+        save_id3(tags, file_path, v2_version=4 if self._id3_version == "2.4" else 3)
 
-        Falls back to a copy-locally-then-replace strategy when the direct
-        save raises OSError (e.g. errno 22 EINVAL on Windows SMB shares,
-        where mutagen's insert_bytes fails due to seek restrictions).
-        """
-        v2_version = 4 if self._id3_version == "2.4" else 3
-        try:
-            tags.save(file_path, v2_version=v2_version)
-        except OSError:
-            self._save_tags_via_temp(tags, file_path, v2_version)
 
-    def _save_tags_via_temp(self, tags: ID3, file_path: str, v2_version: int) -> None:
-        """Write tags to a local temp file, then replace the original.
+def save_id3(tags: ID3, file_path: str | Path, v2_version: int = 3) -> None:
+    """Save tags to disk at the given ID3v2 minor version.
 
-        Avoids mutagen's in-place insert_bytes on network shares.
-        """
-        suffix = Path(file_path).suffix
-        # Keep the temp file on the same drive/share to avoid a cross-device move
-        # (critical on Windows SMB shares where shutil.move across drives is slow or fails).
-        tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix, dir=Path(file_path).parent)
-        try:
-            os.close(tmp_fd)
-            shutil.copy2(file_path, tmp_path)
-            tags.save(tmp_path, v2_version=v2_version)
-            shutil.move(tmp_path, file_path)
-        except Exception:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp_path)
-            raise
+    Falls back to a copy-locally-then-replace strategy when the direct
+    save raises OSError (e.g. errno 22 EINVAL on Windows SMB shares,
+    where mutagen's insert_bytes fails due to seek restrictions).
+    """
+    try:
+        tags.save(file_path, v2_version=v2_version)
+    except OSError:
+        _save_tags_via_temp(tags, file_path, v2_version)
+
+
+def _save_tags_via_temp(tags: ID3, file_path: str | Path, v2_version: int) -> None:
+    """Write tags to a temp file beside the target, then replace the original.
+
+    Avoids mutagen's in-place insert_bytes on network shares. The temp file is
+    kept in the target's directory to avoid a slow cross-device move, and is
+    removed if anything fails.
+    """
+    suffix = Path(file_path).suffix
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix, dir=Path(file_path).parent)
+    try:
+        os.close(tmp_fd)
+        shutil.copy2(file_path, tmp_path)
+        tags.save(tmp_path, v2_version=v2_version)
+        shutil.move(tmp_path, file_path)
+    except Exception:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        raise

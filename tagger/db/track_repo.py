@@ -147,6 +147,15 @@ class TrackRepository:
         )
         return [row[0] for row in cursor.fetchall() if row[0]]
 
+    def update_grouping_by_file_path(self, file_path: str, grouping: str) -> bool:
+        """Set the grouping of the track at file_path; return True if a row matched."""
+        with self._conn:
+            cursor = self._conn.execute(
+                "UPDATE tracks SET grouping = ? WHERE file_path = ?",
+                (grouping, file_path),
+            )
+        return cursor.rowcount > 0
+
     def update_grouping_for_album(self, album_id: int, grouping: str) -> None:
         """Overwrite the grouping field for all tracks in an album."""
         with self._conn:

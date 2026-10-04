@@ -40,6 +40,11 @@ line-length = 100
 # from local ruff runs to avoid spurious failures.
 exclude = ["scripts/"]
 
+[tool.ruff.format]
+# ruff >= 0.16 formats fenced code in markdown; CLAUDE.md holds illustrative
+# (intentionally non-formatted) snippets, so keep markdown out of the formatter.
+exclude = ["*.md"]
+
 [tool.ruff.lint]
 select = [
     "E", "W",    # pycodestyle

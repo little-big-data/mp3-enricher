@@ -1295,6 +1295,144 @@ def audit_itunes(
     click.echo("\n[SUCCESS] audit-itunes complete.")
 
 
+def _holiday_choices() -> list[str]:
+    """Allowed ``--holiday`` values: the ``EnrichmentData.holiday`` Literal minus ``"None"``."""
+    from typing import get_args
+
+    from tagger.enricher.models import EnrichmentData
+
+    annotation = EnrichmentData.model_fields["holiday"].annotation
+    values: list[str] = []
+    for arg in get_args(annotation):
+        values.extend(v for v in get_args(arg) if isinstance(v, str))
+    return [v for v in values if v != "None"]
+
+
+@cli.command("playlist-holiday")
+@click.option(
+    "--itunes-xml",
+    "itunes_xml",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Path to iTunes Music Library.xml.",
+)
+@click.option(
+    "--playlist",
+    required=True,
+    help="Playlist folder path as shown in iTunes, e.g. 'Genre/Halloween'.",
+)
+@click.option(
+    "--holiday",
+    required=True,
+    type=click.Choice(_holiday_choices()),
+    help="Holiday value to add to the GRP1/TIT1 grouping.",
+)
+@click.option(
+    "--threshold",
+    type=int,
+    default=90,
+    show_default=True,
+    help="Fuzzy-match score below which a field is flagged as mismatched.",
+)
+@click.option(
+    "--workers",
+    type=int,
+    default=4,
+    show_default=True,
+    help="Number of threads for parallel tag reading and writing.",
+)
+@click.option(
+    "--db-path",
+    type=Path,
+    default=Path("library.db"),
+    show_default=True,
+    help="SQLite database whose tracks.grouping is kept in sync.",
+)
+@click.option(
+    "--out",
+    type=Path,
+    default=Path("playlist_holiday_audit.csv"),
+    show_default=True,
+    help="Output CSV path for the tag audit.",
+)
+@click.option("--dry-run", is_flag=True, help="Report only; change no files or DB rows.")
+def playlist_holiday(
+    itunes_xml: Path,
+    playlist: str,
+    holiday: str,
+    threshold: int,
+    workers: int,
+    db_path: Path,
+    out: Path,
+    dry_run: bool,
+) -> None:
+    """Tag an iTunes playlist's MP3s with Holiday:<holiday> and audit their tags.
+
+    Adds the holiday to the GRP1/TIT1 grouping of every track in --playlist,
+    mirrors it into the DB, and writes a CSV of tracks whose ID3 title, artist
+    or album differ from iTunes.  After a real run, select the tracks in iTunes
+    and use Get Info -> OK to refresh its tag cache.
+    """
+    import csv as _csv
+
+    from tagger.exceptions import PlaylistNotFoundError
+    from tagger.integrity.itunes_comparator import ItunesLibrary
+    from tagger.integrity.playlist_holiday import apply_holiday_and_audit
+
+    library = ItunesLibrary(itunes_xml)
+    conn = get_db_connection(db_path)
+    try:
+        run_migrations(conn)
+        track_repo = TrackRepository(conn)
+        try:
+            result = apply_holiday_and_audit(
+                library=library,
+                playlist=playlist,
+                holiday=holiday,
+                track_repo=track_repo,
+                threshold=threshold,
+                dry_run=dry_run,
+                workers=workers,
+            )
+        except PlaylistNotFoundError as exc:
+            raise click.ClickException(str(exc)) from exc
+    finally:
+        conn.close()
+
+    fieldnames = [
+        "file_path",
+        "itunes_name",
+        "id3_title",
+        "title_score",
+        "itunes_artist",
+        "id3_artist",
+        "artist_score",
+        "itunes_album",
+        "id3_album",
+        "album_score",
+        "issues",
+    ]
+    with out.open("w", newline="", encoding="utf-8") as f:
+        writer = _csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for audit_row in result.rows:
+            row = audit_row.model_dump()
+            row["issues"] = "|".join(audit_row.issues)
+            writer.writerow(row)
+
+    if dry_run:
+        click.echo("[*] --dry-run: no files or database rows were changed.")
+    if result.skipped:
+        click.echo(f"Skipped (not .mp3): {result.skipped}")
+    if result.tit1_synced:
+        click.echo(f"TIT1 synced: {result.tit1_synced}")
+    click.echo(
+        f"Tagged: {result.tagged} | Already tagged: {result.already_tagged} | "
+        f"Mismatches: {result.mismatches} | Errors: {result.errors}"
+    )
+    click.echo(f"[+] Report written to {out}")
+
+
 @cli.command("restore-from-itunes")
 @click.option(
     "--library",

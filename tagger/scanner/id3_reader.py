@@ -19,7 +19,7 @@ def read_id3_tags(file_path: Path) -> dict[str, Any]:
     Returns:
         A dictionary containing relevant ID3 tag information, including:
         'title', 'artist', 'album', 'track_number', 'year', 'album_artist',
-        'composer', 'bpm', 'genre', 'disc_number'.
+        'composer', 'bpm', 'genre', 'disc_number', 'grouping' (GRP1, else TIT1).
         Returns an empty dictionary if tags cannot be read or the file is invalid.
     """
     tags: dict[str, Any] = {}
@@ -118,6 +118,14 @@ def read_id3_tags(file_path: Path) -> dict[str, Any]:
             # Composer (added for completeness, though not explicitly in brief for scan phase)
             if "TCOM" in audio.tags:
                 tags["composer"] = audio.tags["TCOM"].text[0] if audio.tags["TCOM"].text else None
+
+            # Grouping: GRP1 (iTunes 12.9.1+) when non-empty, else TIT1
+            for frame_id in ("GRP1", "TIT1"):
+                if frame_id in audio.tags:
+                    frame_text = audio.tags[frame_id].text
+                    if frame_text and frame_text[0]:
+                        tags["grouping"] = str(frame_text[0])
+                        break
 
             # Other tags like comment (COMM), lyrics (USLT) can be parsed if needed,
             # but are often not critical for the initial scan phase.
