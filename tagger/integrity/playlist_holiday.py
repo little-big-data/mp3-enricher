@@ -52,6 +52,7 @@ class PlaylistAuditResult(BaseModel):
     mismatches: int = 0
     errors: int = 0
     skipped: int = 0
+    tit1_synced: int = 0
 
 
 def _score(itunes_value: str | None, id3_value: str | None) -> int:
@@ -76,7 +77,8 @@ def _process_track(
     """Read, compare and (unless dry run) tag one track.
 
     Returns the audit row (None when the track has no issue) and an outcome of
-    ``tagged``, ``already_tagged``, ``not_mp3``, ``file_missing`` or ``write_error``.
+    ``tagged``, ``already_tagged``, ``tit1_synced`` (GRP1 already tagged, TIT1 brought in
+    line), ``not_mp3``, ``file_missing`` or ``write_error``.
     """
     path = Path(track.file_path)
     if path.suffix.lower() != ".mp3":
@@ -117,13 +119,15 @@ def _process_track(
     outcome = "already_tagged"
     if new_grouping != old_grouping:
         outcome = "tagged"
-        if not dry_run:
-            try:
-                _write_grouping(path, new_grouping, id3_version)
-            except (PermissionError, OSError, MutagenError) as exc:
-                log.error("playlist_holiday.write_error", file_path=track.file_path, error=str(exc))
-                issues.append("write_error")
-                outcome = "write_error"
+    elif _read_tit1(path) != new_grouping:
+        outcome = "tit1_synced"
+    if outcome in ("tagged", "tit1_synced") and not dry_run:
+        try:
+            _write_grouping(path, new_grouping, id3_version)
+        except (PermissionError, OSError, MutagenError) as exc:
+            log.error("playlist_holiday.write_error", file_path=track.file_path, error=str(exc))
+            issues.append("write_error")
+            outcome = "write_error"
 
     if outcome != "write_error" and not dry_run:
         with db_lock:
@@ -146,6 +150,16 @@ def _process_track(
         issues=issues,
     )
     return row, outcome
+
+
+def _read_tit1(path: Path) -> str | None:
+    """Return the file's TIT1 text, or None when absent or unreadable."""
+    try:
+        tags = ID3(str(path))
+    except (MutagenError, OSError):
+        return None
+    frame = tags.get("TIT1")
+    return str(frame) if frame is not None else None
 
 
 def _write_grouping(path: Path, grouping: str, id3_version: int) -> None:
@@ -192,8 +206,10 @@ def apply_holiday_and_audit(
         for row, outcome in outcomes:
             if outcome == "tagged":
                 result.tagged += 1
-            elif outcome == "already_tagged":
+            elif outcome in ("already_tagged", "tit1_synced"):
                 result.already_tagged += 1
+                if outcome == "tit1_synced":
+                    result.tit1_synced += 1
             elif outcome == "not_mp3":
                 result.skipped += 1
             if row is None:
@@ -212,5 +228,6 @@ def apply_holiday_and_audit(
         mismatches=result.mismatches,
         errors=result.errors,
         skipped=result.skipped,
+        tit1_synced=result.tit1_synced,
     )
     return result

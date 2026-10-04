@@ -579,6 +579,8 @@ The playlist is a folder path as shown in iTunes (segments separated by `/`, cas
 
 Only `.mp3` files are tagged. Any other file type in the playlist (for example `.m4a`) is left untouched, listed in the CSV as `not_mp3`, and counted on a `Skipped (not .mp3): N` line.
 
+GRP1 is the source of truth. If a file's GRP1 already has the segment but its TIT1 is missing or different, TIT1 is set to match GRP1 and the file is counted on a `TIT1 synced: N` line (it still counts as already tagged).
+
 **Options:**
 ```
 --itunes-xml PATH     Path to iTunes Music Library.xml (required)

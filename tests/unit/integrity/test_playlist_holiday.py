@@ -234,6 +234,44 @@ def test_already_tagged_file_is_not_rewritten(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("stale_tit1", ["Gender:Male", None])
+def test_already_tagged_grp1_with_stale_tit1_syncs_tit1(
+    tmp_path: Path, repo: TrackRepository, stale_tit1: str | None
+) -> None:
+    grouping = "Gender:Male | Holiday:Halloween"
+    mp3 = _make_mp3(tmp_path / "a.mp3", grouping=grouping, tit1=stale_tit1)
+    if stale_tit1 is None:
+        tags = ID3(str(mp3))
+        tags.delall("TIT1")
+        tags.save(str(mp3), v2_version=3)
+    lib = _build_library(tmp_path, [(mp3, "Ghost", "Artist", "Album")])
+
+    first = _run(lib, repo)
+
+    assert _frames(mp3) == (grouping, grouping)
+    assert first.tit1_synced == 1
+    assert first.tagged == 0
+    assert first.already_tagged == 1
+    second = _run(lib, repo)
+    assert second.tit1_synced == 0
+    assert second.already_tagged == 1
+
+
+@pytest.mark.unit
+def test_dry_run_counts_stale_tit1_but_writes_nothing(
+    tmp_path: Path, repo: TrackRepository, mocker: MockerFixture
+) -> None:
+    mp3 = _make_mp3(tmp_path / "a.mp3", grouping="Gender:Male | Holiday:Halloween", tit1="Stale")
+    lib = _build_library(tmp_path, [(mp3, "Ghost", "Artist", "Album")])
+    mock_save = mocker.patch(f"{_SVC}.save_id3")
+
+    result = _run(lib, repo, dry_run=True)
+
+    mock_save.assert_not_called()
+    assert result.tit1_synced == 1
+
+
+@pytest.mark.unit
 def test_rerun_is_idempotent(tmp_path: Path, conn: sqlite3.Connection) -> None:
     """Re-running with identical inputs after success yields the same end state."""
     repo = TrackRepository(conn)

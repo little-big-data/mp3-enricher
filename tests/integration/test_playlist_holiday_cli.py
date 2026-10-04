@@ -269,6 +269,26 @@ def test_non_mp3_files_are_skipped_and_reported(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+def test_stale_tit1_is_synced_and_reported(tmp_path: Path) -> None:
+    grouping = "Gender:Male | Holiday:Halloween"
+    mp3 = _make_mp3(tmp_path / "music" / "01 Ghost.mp3", title="Ghost", grouping=grouping)
+    tags = ID3(str(mp3))
+    tags.setall("TIT1", [TIT1(encoding=3, text="Gender:Male")])
+    tags.save(str(mp3), v2_version=3)
+    xml = _write_xml(tmp_path, [(mp3, "Ghost")])
+    db = tmp_path / "library.db"
+    _seed_db(db, [mp3])
+    s = {"xml": xml, "db": db, "out": tmp_path / "audit.csv"}
+
+    result = _invoke(s)
+
+    assert result.exit_code == 0, result.output
+    assert "TIT1 synced: 1" in result.output
+    assert "Tagged: 0 | Already tagged: 1 | Mismatches: 0 | Errors: 0" in result.output
+    assert str(ID3(str(mp3))["TIT1"]) == grouping
+
+
+@pytest.mark.integration
 def test_dry_run_leaves_files_and_db_untouched(scenario: dict[str, Path]) -> None:
     before = scenario["good"].read_bytes()
 
