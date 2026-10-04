@@ -13,6 +13,7 @@ import structlog
 from pydantic import BaseModel, ConfigDict
 from rapidfuzz import fuzz
 
+from tagger.exceptions import PlaylistNotFoundError
 from tagger.scanner.id3_reader import read_id3_tags
 from tagger.scanner.walker import find_mp3_files
 
@@ -48,6 +49,23 @@ class AuditDiscrepancy(BaseModel):
     album_score: int | None
 
 
+class ItunesTrack(BaseModel):
+    """One iTunes track resolved from a playlist."""
+
+    track_id: int
+    file_path: str
+    name: str | None = None
+    artist: str | None = None
+    album: str | None = None
+    grouping: str | None = None
+
+
+def _decode_location(loc: str) -> str:
+    """Decode an iTunes ``file://`` Location URL to a native path string (case preserved)."""
+    no_scheme = re.sub(r"^file://(?:localhost/)?", "", loc)
+    return str(Path(urllib.parse.unquote(no_scheme)))
+
+
 class ItunesLibrary:
     """Parses an iTunes Music Library XML and supports path-based lookup."""
 
@@ -56,17 +74,18 @@ class ItunesLibrary:
             plist: dict[str, Any] = plistlib.load(fh, fmt=plistlib.FMT_XML)
 
         tracks: dict[str, dict[str, Any]] = plist.get("Tracks", {})
+        self._tracks_by_id: dict[int, dict[str, Any]] = {
+            int(key): entry for key, entry in tracks.items()
+        }
+        self._playlists: list[dict[str, Any]] = plist.get("Playlists", [])
         self._index: dict[str, dict[str, Any]] = {}
 
         for entry in tracks.values():
             loc: str = entry.get("Location", "")
             if not loc:
                 continue
-            # Decode file:// URL — iTunes uses file://localhost/M:/... on Windows
-            no_scheme = re.sub(r"^file://(?:localhost/)?", "", loc)
-            raw = urllib.parse.unquote(no_scheme)
-            # Path() normalises separators; lower() gives case-insensitive lookup
-            win_path = str(Path(raw)).lower()
+            # lower() gives case-insensitive lookup
+            win_path = _decode_location(loc).lower()
             self._index[win_path] = entry
 
         log.debug("itunes_library.loaded", track_count=len(self._index))
@@ -75,6 +94,56 @@ class ItunesLibrary:
         """Return the iTunes track dict for *mp3_path*, or None if not indexed."""
         key = str(Path(str(mp3_path))).lower()
         return self._index.get(key)
+
+    def _resolve_playlist(self, path: str) -> dict[str, Any]:
+        """Walk the folder hierarchy named by *path* and return the leaf playlist dict."""
+        segments = [seg.strip().lower() for seg in path.split("/") if seg.strip()]
+        if not segments:
+            raise PlaylistNotFoundError(path)
+        parent_id: str | None = None
+        node: dict[str, Any] | None = None
+        for segment in segments:
+            candidates = [
+                pl
+                for pl in self._playlists
+                if str(pl.get("Name", "")).strip().lower() == segment
+                and pl.get("Parent Persistent ID") == parent_id
+            ]
+            if not candidates:
+                raise PlaylistNotFoundError(path)
+            if len(candidates) > 1:
+                raise PlaylistNotFoundError(path, ambiguous=True)
+            node = candidates[0]
+            parent_id = node.get("Playlist Persistent ID")
+        assert node is not None  # segments is non-empty
+        return node
+
+    def playlist_tracks(self, path: str) -> list[ItunesTrack]:
+        """Return the tracks of the playlist at folder *path* (e.g. ``Genre/Halloween``).
+
+        Raises PlaylistNotFoundError when the path is unknown or ambiguous. Items missing
+        from ``Tracks`` or without a Location are skipped; duplicates keep first position.
+        """
+        playlist = self._resolve_playlist(path)
+        result: list[ItunesTrack] = []
+        seen: set[int] = set()
+        for item in playlist.get("Playlist Items", []):
+            track_id = int(item["Track ID"])
+            entry = self._tracks_by_id.get(track_id)
+            if track_id in seen or entry is None or not entry.get("Location"):
+                continue
+            seen.add(track_id)
+            result.append(
+                ItunesTrack(
+                    track_id=track_id,
+                    file_path=_decode_location(entry["Location"]),
+                    name=entry.get("Name"),
+                    artist=entry.get("Artist"),
+                    album=entry.get("Album"),
+                    grouping=entry.get("Grouping"),
+                )
+            )
+        return result
 
 
 def compare_library(

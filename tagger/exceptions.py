@@ -50,5 +50,14 @@ class FileProcessError(TaggerError):
     """Errors related to file reading/writing."""
 
 
+class PlaylistNotFoundError(TaggerError):
+    """An iTunes playlist path matched no playlist, or matched more than one."""
+
+    def __init__(self, playlist: str, *, ambiguous: bool = False) -> None:
+        reason = "is ambiguous" if ambiguous else "not found"
+        super().__init__(f"iTunes playlist {playlist!r} {reason}")
+        self.playlist = playlist
+
+
 # Alias for TransientAPIError — satisfies the public API name used in issue AC
 DiscogsServerError = TransientAPIError

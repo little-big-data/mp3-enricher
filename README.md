@@ -363,6 +363,8 @@ python -m tagger.mp3_tagger write
 | `audit-itunes --library <path> --itunes-xml <path>` | Compare current MP3 tags against iTunes Library XML; write discrepancy CSV |
 | `restore-from-itunes --library <path> --itunes-xml <path>` | Restore Artist, Album Artist, Album, and Track Number from iTunes ground truth |
 
+| `playlist-holiday --itunes-xml <path> --playlist <Folder/Name> --holiday <name>` | Add `Holiday:<name>` to the GRP1/TIT1 grouping of every MP3 in an iTunes playlist; write a tag-audit CSV |
+
 All commands share `--db-path` to point at a specific database file. The default is `tester.db` in the current directory.
 
 #### `scan-integrity` — detect tag problems before they cause bad enrichment
@@ -557,6 +559,37 @@ Only the affected ID3 frames are overwritten. Every other tag (genre, year, grou
 - Files not found in the iTunes index (`itunes_not_found`) are skipped by the restorer — it only writes values it can verify against iTunes.
 - Both commands are idempotent — re-running after a partial failure is safe.
 - The `--threshold` option controls sensitivity. The default of 75 flags clear mismatches while ignoring minor formatting differences (e.g. `The Beatles` vs `Beatles, The`). Lower it to catch more subtle corruption; raise it if you're seeing false positives.
+
+---
+
+## Tagging an iTunes playlist with a holiday (`playlist-holiday`)
+
+Adds a `Holiday:<name>` segment to the grouping (GRP1 and TIT1) of every MP3 in an iTunes playlist, and mirrors it into `library.db`. An existing `Holiday:` segment is merged (`Holiday:Christmas, Halloween`); a track that already has the value is left alone, so re-running is safe.
+
+```powershell
+python tagger/mp3_tagger.py playlist-holiday `
+    --itunes-xml "C:\Users\you\Music\iTunes\iTunes Music Library.xml" `
+    --playlist "Genre/Halloween" `
+    --holiday Halloween `
+    --db-path library.db `
+    --dry-run
+```
+
+The playlist is a folder path as shown in iTunes (segments separated by `/`, case-insensitive). The same run also compares each track's iTunes Name / Artist / Album with its ID3 title / artist / album and writes `playlist_holiday_audit.csv` (one row per track with an issue: `title_mismatch`, `artist_mismatch`, `album_mismatch`, `file_missing`, `write_error`, pipe-joined). The CSV is written on a dry run too.
+
+**Options:**
+```
+--itunes-xml PATH     Path to iTunes Music Library.xml (required)
+--playlist TEXT       Playlist folder path, e.g. Genre/Halloween (required)
+--holiday CHOICE      Halloween, Christmas, Thanksgiving or Easter (required)
+--threshold INT       Fuzzy score below which a field is flagged (default: 90)
+--workers INT         Parallel threads (default: 4)
+--db-path PATH        SQLite database to keep in sync (default: library.db)
+--out PATH            Audit CSV (default: playlist_holiday_audit.csv)
+--dry-run             Preview without changing files or the database
+```
+
+**iTunes refresh:** iTunes caches tags. After a real run, select the tracks in iTunes and choose **Get Info → OK** so it re-reads the new grouping.
 
 ---
 

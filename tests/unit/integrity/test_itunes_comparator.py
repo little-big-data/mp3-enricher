@@ -9,8 +9,13 @@ from __future__ import annotations
 
 import plistlib
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
+import pytest
+from pydantic import BaseModel
+
+from tagger import exceptions
 from tagger.integrity.itunes_comparator import AuditDiscrepancy, ItunesLibrary, compare_library
 
 # ---------------------------------------------------------------------------
@@ -349,3 +354,240 @@ class TestCompareLibrary:
                 workers=1,
             )
         assert results == []
+
+
+# ---------------------------------------------------------------------------
+# ItunesLibrary.playlist_tracks tests (playlist folder-path resolution)
+# ---------------------------------------------------------------------------
+
+_LOC_A = "file://localhost/M:/Shared%20Music/ARTIST%20A/Album%20A/01%20Ghost.mp3"
+_LOC_B = "file://localhost/M:/Shared%20Music/Artist%20B/Album%20B/02%20Thriller.mp3"
+_LOC_C = "file://localhost/M:/Shared%20Music/Artist%20C/Album%20C/03%20Monster.mp3"
+
+
+def _write_library(path: Path, tracks: dict[str, dict], playlists: list[dict] | None) -> None:
+    """Write an iTunes-style plist with both a Tracks dict and a Playlists array."""
+    data: dict[str, Any] = {"Tracks": tracks}
+    if playlists is not None:
+        data["Playlists"] = playlists
+    with path.open("wb") as fh:
+        plistlib.dump(data, fh, fmt=plistlib.FMT_XML)
+
+
+def _track(
+    track_id: int,
+    *,
+    location: str | None,
+    name: str | None = "Name",
+    artist: str | None = "Artist",
+    album: str | None = "Album",
+    grouping: str | None = None,
+) -> dict:
+    entry: dict[str, Any] = {"Track ID": track_id}
+    for key, value in (
+        ("Name", name),
+        ("Artist", artist),
+        ("Album", album),
+        ("Grouping", grouping),
+        ("Location", location),
+    ):
+        if value is not None:  # plistlib cannot serialise None
+            entry[key] = value
+    return entry
+
+
+def _playlist(
+    name: str,
+    persistent_id: str,
+    *,
+    parent: str | None = None,
+    items: list[int] | None = None,
+    folder: bool = False,
+) -> dict:
+    pl: dict[str, Any] = {"Name": name, "Playlist Persistent ID": persistent_id}
+    if parent is not None:
+        pl["Parent Persistent ID"] = parent
+    if folder:
+        pl["Folder"] = True
+    if items is not None:
+        pl["Playlist Items"] = [{"Track ID": tid} for tid in items]
+    return pl
+
+
+def _standard_library(tmp_path: Path) -> ItunesLibrary:
+    """Genre/Halloween (tracks 2, 1), Mood/Halloween (track 3), top-level Library."""
+    xml = tmp_path / "library.xml"
+    tracks = {
+        "1": _track(
+            1,
+            location=_LOC_A,
+            name="Ghost",
+            artist="Artist A",
+            album="Album A",
+            grouping="Gender:Male",
+        ),
+        "2": _track(2, location=_LOC_B, name="Thriller", artist="Artist B", album="Album B"),
+        "3": _track(3, location=_LOC_C, name="Monster", artist="Artist C", album="Album C"),
+    }
+    playlists = [
+        _playlist("Library", "LIB0", items=[1, 2, 3]),
+        _playlist("Genre", "GEN0", folder=True, items=[1, 2]),
+        _playlist("Halloween", "HAL1", parent="GEN0", items=[2, 1]),
+        _playlist("Mood", "MOO0", folder=True, items=[3]),
+        _playlist("Halloween", "HAL2", parent="MOO0", items=[3]),
+    ]
+    _write_library(xml, tracks, playlists)
+    return ItunesLibrary(xml)
+
+
+class TestPlaylistTracks:
+    def test_resolves_folder_path_and_returns_tracks_in_playlist_order(
+        self, tmp_path: Path
+    ) -> None:
+        lib = _standard_library(tmp_path)
+        result = lib.playlist_tracks("Genre/Halloween")
+        assert [t.track_id for t in result] == [2, 1]
+
+    def test_returned_tracks_are_pydantic_itunes_track_models(self, tmp_path: Path) -> None:
+        lib = _standard_library(tmp_path)
+        result = lib.playlist_tracks("Genre/Halloween")
+        assert all(isinstance(t, BaseModel) for t in result)
+        assert {type(t).__name__ for t in result} == {"ItunesTrack"}
+
+    def test_track_fields_are_populated(self, tmp_path: Path) -> None:
+        lib = _standard_library(tmp_path)
+        by_id = {t.track_id: t for t in lib.playlist_tracks("Genre/Halloween")}
+        ghost = by_id[1]
+        assert ghost.name == "Ghost"
+        assert ghost.artist == "Artist A"
+        assert ghost.album == "Album A"
+        assert ghost.grouping == "Gender:Male"
+        assert by_id[2].grouping is None
+
+    def test_file_path_is_decoded_and_case_preserved(self, tmp_path: Path) -> None:
+        lib = _standard_library(tmp_path)
+        by_id = {t.track_id: t for t in lib.playlist_tracks("Genre/Halloween")}
+        expected = str(Path("M:/Shared Music/ARTIST A/Album A/01 Ghost.mp3"))
+        assert by_id[1].file_path == expected
+
+    def test_same_leaf_name_under_different_folder_is_disambiguated_by_parent(
+        self, tmp_path: Path
+    ) -> None:
+        lib = _standard_library(tmp_path)
+        assert [t.track_id for t in lib.playlist_tracks("Mood/Halloween")] == [3]
+
+    def test_top_level_playlist_resolves(self, tmp_path: Path) -> None:
+        lib = _standard_library(tmp_path)
+        assert [t.track_id for t in lib.playlist_tracks("Library")] == [1, 2, 3]
+
+    def test_three_level_path_resolves(self, tmp_path: Path) -> None:
+        xml = tmp_path / "library.xml"
+        _write_library(
+            xml,
+            {"1": _track(1, location=_LOC_A)},
+            [
+                _playlist("A", "P_A", folder=True),
+                _playlist("B", "P_B", parent="P_A", folder=True),
+                _playlist("C", "P_C", parent="P_B", items=[1]),
+                _playlist("C", "P_C2", items=[]),  # top-level decoy with the same leaf name
+            ],
+        )
+        lib = ItunesLibrary(xml)
+        assert [t.track_id for t in lib.playlist_tracks("A/B/C")] == [1]
+
+    def test_name_match_is_case_insensitive(self, tmp_path: Path) -> None:
+        lib = _standard_library(tmp_path)
+        assert [t.track_id for t in lib.playlist_tracks("genre/HALLOWEEN")] == [2, 1]
+
+    def test_leading_and_trailing_slashes_are_ignored(self, tmp_path: Path) -> None:
+        lib = _standard_library(tmp_path)
+        assert [t.track_id for t in lib.playlist_tracks("/Genre/Halloween/")] == [2, 1]
+
+    def test_nested_leaf_is_not_resolved_from_the_root(self, tmp_path: Path) -> None:
+        """Paths are rooted: a bare leaf name must not match a nested playlist."""
+        lib = _standard_library(tmp_path)
+        with pytest.raises(exceptions.PlaylistNotFoundError):
+            lib.playlist_tracks("Halloween")
+
+    def test_unknown_path_raises_playlist_not_found(self, tmp_path: Path) -> None:
+        lib = _standard_library(tmp_path)
+        with pytest.raises(exceptions.PlaylistNotFoundError) as excinfo:
+            lib.playlist_tracks("Genre/Christmas")
+        assert excinfo.value.playlist == "Genre/Christmas"
+        assert "Genre/Christmas" in str(excinfo.value)
+
+    def test_playlist_not_found_is_a_tagger_error(self) -> None:
+        assert issubclass(exceptions.PlaylistNotFoundError, exceptions.TaggerError)
+
+    def test_empty_path_raises_playlist_not_found(self, tmp_path: Path) -> None:
+        lib = _standard_library(tmp_path)
+        with pytest.raises(exceptions.PlaylistNotFoundError):
+            lib.playlist_tracks("")
+
+    def test_ambiguous_path_raises_playlist_not_found(self, tmp_path: Path) -> None:
+        xml = tmp_path / "library.xml"
+        _write_library(
+            xml,
+            {"1": _track(1, location=_LOC_A), "2": _track(2, location=_LOC_B)},
+            [
+                _playlist("Genre", "G1", folder=True),
+                _playlist("Halloween", "H1", parent="G1", items=[1]),
+                _playlist("Genre", "G2", folder=True),
+                _playlist("Halloween", "H2", parent="G2", items=[2]),
+            ],
+        )
+        lib = ItunesLibrary(xml)
+        with pytest.raises(exceptions.PlaylistNotFoundError, match=r"(?i)ambiguous"):
+            lib.playlist_tracks("Genre/Halloween")
+
+    def test_library_without_playlists_key_raises_playlist_not_found(self, tmp_path: Path) -> None:
+        xml = tmp_path / "library.xml"
+        _write_library(xml, {"1": _track(1, location=_LOC_A)}, None)
+        lib = ItunesLibrary(xml)
+        with pytest.raises(exceptions.PlaylistNotFoundError):
+            lib.playlist_tracks("Genre/Halloween")
+
+    def test_playlist_without_items_returns_empty_list(self, tmp_path: Path) -> None:
+        xml = tmp_path / "library.xml"
+        _write_library(xml, {}, [_playlist("Empty", "E1")])
+        lib = ItunesLibrary(xml)
+        assert lib.playlist_tracks("Empty") == []
+
+    def test_items_missing_from_tracks_or_without_location_are_skipped(
+        self, tmp_path: Path
+    ) -> None:
+        xml = tmp_path / "library.xml"
+        _write_library(
+            xml,
+            {
+                "1": _track(1, location=_LOC_A),
+                "2": _track(2, location=None),  # e.g. a stream or cloud-only track
+            },
+            [_playlist("Mixed", "M1", items=[1, 2, 99])],
+        )
+        lib = ItunesLibrary(xml)
+        assert [t.track_id for t in lib.playlist_tracks("Mixed")] == [1]
+
+    def test_duplicate_items_are_returned_once(self, tmp_path: Path) -> None:
+        xml = tmp_path / "library.xml"
+        _write_library(
+            xml,
+            {"1": _track(1, location=_LOC_A), "2": _track(2, location=_LOC_B)},
+            [_playlist("Dupes", "D1", items=[1, 2, 1])],
+        )
+        lib = ItunesLibrary(xml)
+        assert [t.track_id for t in lib.playlist_tracks("Dupes")] == [1, 2]
+
+    def test_missing_optional_fields_are_none(self, tmp_path: Path) -> None:
+        xml = tmp_path / "library.xml"
+        _write_library(
+            xml,
+            {"1": _track(1, location=_LOC_A, name=None, artist=None, album=None)},
+            [_playlist("Sparse", "S1", items=[1])],
+        )
+        lib = ItunesLibrary(xml)
+        (track,) = lib.playlist_tracks("Sparse")
+        assert track.name is None
+        assert track.artist is None
+        assert track.album is None
+        assert track.grouping is None
